@@ -1,0 +1,403 @@
+---
+title: "PoweR - Feature Engineering"
+author: "Hubert Ruczyński"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Prerequisites
+
+```{r install, include = FALSE}
+install.packages('DALEX')
+install.packages('knitr')
+install.packages('mice')
+install.packages('ggplot2')
+install.packages('GGally')
+install.packages('Hmisc')
+install.packages('caret')
+install.packages('devtools')
+devtools::install_github('ModelOriented/forester')
+```
+
+# Set up
+
+```{r setup, include = FALSE}
+library(forester)
+library(DALEX)
+library(knitr)
+library(mice)
+library(ggplot2)
+library(GGally)
+library(Hmisc)
+library(caret)
+```
+
+# Datasets
+
+```{r}
+knitr::kable(head(titanic, 10))
+```
+
+```{r}
+knitr::kable(head(lisbon, 10))
+```
+
+# Missing data
+
+To work on the missing data we will use a titanic dataset because lisbon doesn't have such values. We say that a dataset contains missing values when the field described by a row and column has:
+
+-   no value (' '),
+
+-   NA,
+
+-   Nan,
+
+-   NULL.
+
+Different machine learning (ML) models handle the missing values in their own ways, some of them can accept them, whereas others cannot. The best practice is to **always** deal with the missing values in some way, but the data scientist has to be aware what are the pros and cons of every method.
+
+## Deleting the observations
+
+One way of dealing with the missing values is deleting the observations which contain such issues. There are several strategies which might be applied to this step:
+
+-   If any value is missing, delete the row - a very harsh method which severely narrows the dataset.
+
+-   If at least X% values are missing, delete the row - a reasonable attempt where we set the threshold X in such a way that our dataset won't lose too many observations.
+
+-   If the target value is missing, delete the row - acceptable solution, because the imputation of the target value is always wrong, as we will use a statistical method to predict the value of our ground truth of the model.
+
+-   A combination of the two last methods.
+
+```{r delete any rows}
+nrow(titanic)
+nrow(titanic[complete.cases(titanic), ])
+```
+
+```{r delete X% rows}
+rm_perc <- function(df, perc) {
+  n     <- ncol(df)
+  to_rm <- c()
+  for (i in 1:nrow(df)) {
+    nas   <- sum(as.integer(is.na(df[i, ]))) / n
+    if (nas >= 1 - perc) {
+      rm <- FALSE
+    } else {
+      rm <- TRUE
+    }
+    to_rm <- c(to_rm, rm)
+  }
+  return(to_rm)
+}
+
+nrow(titanic[rm_perc(titanic, 0.5), ])
+nrow(titanic[rm_perc(titanic, 0.6), ])
+nrow(titanic[rm_perc(titanic, 0.7), ])
+nrow(titanic[rm_perc(titanic, 0.8), ])
+nrow(titanic[rm_perc(titanic, 0.9), ])
+```
+
+```{r delete if target is missing}
+# Let's assume we want to predict the country, as survived has all values.
+nrow(titanic[!is.na(titanic$country), ])
+```
+
+## Task 1
+
+Write a combination method from two last methods. Set the threshold for 70%.
+
+```{r combination}
+# Let's assume we want to predict the country, as survived has all values.
+task1 <- titanic[!is.na(titanic$country), ]
+task1 <- task1[rm_perc(task1, 0.7), ]
+nrow(task1)
+```
+
+## Deleting the columns
+
+We can also decide to look at the dataset column-wise and delete all columns instead of rows. There are several strategies which might be applied to this step:
+
+-   If any value is missing, delete the column - a very harsh method which can lead to deleting very important features from the dataset,
+
+-   If at least X% values are missing, delete the column - reasonable attempt. The intuition guides us to believe that if the majority of the column values are missing, we should delete such a feature as it won't let our model learn properly.
+
+**WARNING** - never delete the target column, as it is a crucial element of our ML task.
+
+```{r delete any cols}
+print('number of features')
+ncol(titanic)
+print('column names')
+colnames(titanic)
+print('number of columns without nulls')
+ncol(titanic[ , colSums(is.na(titanic))==0])
+print('column names which dont have nulls')
+colnames(titanic[ , colSums(is.na(titanic))==0])
+```
+
+```{r delete X% cols}
+rm_col_perc <- function(df, perc) {
+  n     <- nrow(df)
+  to_rm <- c()
+  for (i in 1:ncol(df)) {
+    nas   <- sum(as.integer(is.na(df[, i]))) / n
+    if (nas >= 1 - perc) {
+      rm <- FALSE
+    } else {
+      rm <- TRUE
+    }
+    to_rm <- c(to_rm, rm)
+  }
+  return(to_rm)
+}
+print('0.9 threshold')
+ncol(titanic[, rm_col_perc(titanic, 0.9)])
+print('0.99 threshold')
+ncol(titanic[, rm_col_perc(titanic, 0.99)])
+print('0.999 threshold')
+ncol(titanic[, rm_col_perc(titanic, 0.999)])
+```
+
+## Data imputation
+
+The last strategy while dealing with missing values is data imputation. In this approach, the user in fact uses some ML method to predict the missing values of the features instead of the target. For numerical columns we can, for example, create an empirical distribution from existing observations and using that distribution sample new values for missing cases. There are 3 main methods of data imputation:
+
+-   Simple statistical imputation (distribution, mean, median, etc),
+
+-   Imputation with ML models,
+
+-   Complex statistical imputation (ex. with MICE algorithm).
+
+**WARNING** - During the model training pipeline there are two approaches for choosing the best moment for data imputation.
+
+-   Upfront imputation (before train-test split). - An easy way of obtaining a unified imputation for all observations, however, we are providing reasoning from all data sets, so in the test dataset such imputed values will have some information from the train set which is unwanted.
+
+-   Postponed imputation (after train-test split) - A bit harder imputation method where we impute train, test, and validation sets separately. This way we don't include any unwanted knowledge in the datasets.
+
+```{r simple statistical imputation}
+
+age_imp <- median(titanic$age, na.rm = TRUE)
+print('age_imp')
+age_imp
+
+colSums(is.na(titanic))
+country_imp <- table(titanic$country)[which.max(as.vector(table(titanic$country)))]
+print('country_imp')
+country_imp
+
+fare_imp <- median(titanic$fare, na.rm = TRUE)
+print('fare_imp')
+fare_imp
+
+sibsp_imp <- median(titanic$sibsp, na.rm = TRUE)
+print('sibsp_imp')
+sibsp_imp
+
+parch_imp <- median(titanic$parch, na.rm = TRUE)
+print('parch_imp')
+parch_imp
+
+titanic$age[is.na(titanic$age)]         <- age_imp
+titanic$country[is.na(titanic$country)] <- names(country_imp)
+titanic$fare[is.na(titanic$fare)]       <- fare_imp
+titanic$sibsp[is.na(titanic$sibsp)]     <- sibsp_imp
+titanic$parch[is.na(titanic$parch)]     <- parch_imp
+
+print('number of complete cases')
+nrow(titanic[complete.cases(titanic), ])
+```
+
+MICE stands for **Multivariate Imputation By Chained Equations algorithm**, a technique by which we can effortlessly impute missing values in a dataset by looking at data from other columns and trying to estimate the best prediction for each missing value.
+
+```{r MICE imputation}
+data('titanic')
+titanic <- mice::mice(titanic, seed = 123, print = FALSE)
+titanic <- mice::complete(titanic)
+titanic
+```
+
+# Removing unnecessary features
+
+Sometimes at the data preparation stage, we can already define the columns which will be irrelevant to our final model or we want them to not be included because they shouldn't matter.
+
+## Id-like columns
+
+The best example of a feature which is included in the `lisbon` dataset is the column called `Id`. Especially if our dataset comes from SQL environments it is common to find multiple id-like features which cannot give our model any reasonable information which makes them unwanted.
+
+**WARNING** There might be cases where the removal worsens the performance of the model, however, it is always a good practice to remove such columns.
+
+```{r lisbon head}
+data('lisbon')
+head(lisbon)
+```
+
+```{r lisbon id col}
+lisbon <- lisbon[, -1]
+lisbon
+```
+
+## Static columns
+
+Another case of unwanted features is the static columns. We consider a column to be static / almost static when all or almost all values are the same. Such columns have an extremely low impact on the final model, thus they should be deleted.
+
+```{r lisbon static cols}
+del <- c()
+
+for (i in 1:ncol(lisbon)) {
+  if (length(unique(lisbon[, i])) == 1) {
+    del <- c(del, i)
+    print(names(lisbon)[i])
+  }
+}
+
+if (!is.null(del)) {
+  lisbon2 <- lisbon[, -del]
+} else {
+  lisbon2 <- lisbon
+}
+
+lisbon2
+```
+
+## Duplicated
+
+In some cases, it is also possible to find the columns that have duplicated values, and they should be removed too, as one of them will give the model all information that it needs.
+
+```{r lisbon duplicate, results = "hold"}
+pairs <- c()
+for (i in 1:ncol(lisbon)) {
+  for (j in i:ncol(lisbon)) {
+    if (i != j && identical(lisbon[, i], lisbon[, j])) {
+      pairs <- c(pairs, c(colnames(lisbon[i]), ' - ', colnames(lisbon[j]), '; '))
+    }
+  }
+}
+
+cat(pairs)
+```
+
+## High correlation / variable dependence
+
+The most advanced method for removing unnecessary features is performed by identifying highly dependent pairs of them. This can be done by comparing the pair plot of all features or by calculating the correlation between the variables.
+
+In the first method, we easily create a pair plot and we are looking towards the linear scatter plots where points form the line.
+
+```{r lisbon2}
+head(lisbon2)
+```
+
+```{r dependance by pair plot}
+pariplot_analysis <- ggpairs(lisbon2,columns = c(4, 5, 6, 7, 8, 9, 10, 12),
+                             aes(alpha = 0.01), progress = FALSE) +
+  theme_minimal() +
+  labs(title = 'Lisbon analysis pairplot') +
+  theme(plot.title = element_text(colour = 'black', size = 25),
+        axis.title.x = element_text(colour = 'black', size = 15),
+        axis.title.y = element_text(colour = 'black', size = 15)) 
+pariplot_analysis
+```
+
+In the second case, we calculate Pearson's correlation rank for numerical features and Crammer's V rank for the categorical ones. If the correlation is high (\|Corr\| \>= 0.7) we can decide to delete one of the correlated features. Note that this method is different from the aforementioned ones and might result in worsening the model in some cases.
+
+Notice that here we chose a Pearson's `r` correlation which evaluates the linear relationship between two continuous variables, while the Spearman's `rho` correlation evaluates the monotonic relationship which makes it better for general use.
+
+```{r dependance by correlation}
+corr_numeric <- rcorr(as.matrix(lisbon2[,c(4, 5, 6, 7, 8, 9, 10, 12)]))
+round(corr_numeric$r, 2)
+```
+
+# Distribution transformations
+
+Data transformations are the methods of increasing performance in some cases. Different ML models treat the data in various ways, so some of them will take exact values in a data set and make computations on them, whereas others might not be concerned by the exact values.
+
+## Scaling
+
+The first method is scaling a data set. In this method, we want to reduce the range of values of the features in order to minimize the distances between the observations. The gradient-based algorithms converge more quickly in this case, distance based ones can obtain smaller distances which makes the observations more comparable to each other, whereas the tree-based models completely ignore the scaling as the exact values aren't important for them.
+
+## Normalization
+
+Normalization is a scaling technique in which values are shifted and rescaled so that they end up ranging between 0 and 1. It is also known as Min-Max scaling.
+
+$$X' = \frac{X - X_{min}}{X_{max} - X_{min}}$$
+
+```{r normalization}
+data("titanic")
+titanic2 <- preProcess(titanic, method = c("range"))
+titanic2 <- predict(titanic2, titanic)
+summary(titanic$fare)
+summary(titanic2$fare)
+```
+
+## Standardization
+
+Standardization is another scaling method where the values are centered around the mean with a unit standard deviation. This means that the mean of the attribute becomes zero, and the resultant distribution has a unit standard deviation.
+
+$$X' = \frac{X - \mu}{\sigma}$$
+
+```{r standarization}
+data('titanic')
+summary(titanic$fare)
+titanic3 <- as.data.frame(lapply(titanic, function(x) if(is.numeric(x)) {
+  scale(x, center=TRUE, scale=TRUE)
+} else {
+  x
+}))
+summary(titanic3$fare)
+```
+
+# Categorical variables encoding
+
+Different ML models have various requirements concerning the data set. We already know that some models require scaling methods whereas others are invulnerable to them. In that case, however, the issues affect the performance only, whereas in the case of dealing with the categorical features some models (ex. xgboost) cannot work with non-numerical values.
+
+## Ordinal encoding
+
+Ordinal encoding is a method for coding the hierarchical features in a clear order. Such variables are called **ordered**. One of the simplest examples is encoding the feature with levels low, medium, and high as 1, 2, 3 - this way we show that low \< medium \< high such as 1 \< 2 \< 3. If we have a column describing ex. colours we don't want the gradation of which colour is better than the other, so we will use the next method.
+
+```{r ordinal encoding}
+data('titanic')
+encode_ordinal <- function(x, order = unique(x)) {
+  x <- as.numeric(factor(x, levels = order, exclude = NULL))
+  return(x)
+}
+
+enc <- titanic
+enc$class <- encode_ordinal(enc$class, levels(enc$class))
+enc$survived <- encode_ordinal(enc$survived, levels(enc$survived))
+head(enc$class)
+head(enc$survived)
+```
+
+## One hot encoding
+
+The one-hot encoding (OHE) is used for categorical features without a given order, so we can't say that something is better than something else. Such features are called **nominal**. For example, we can consider a feature describing the colour with levels red, green, and blue and we won't encode it as 1, 2, 3 because it will indicate that blue is better than green.
+
+During the OHE we create a separate column for every feature and encode it in a binary way with 0s and 1s. In the colour case, one hot encoding creates a table with columns red, green, and blue and 1 placed in the column where such column exists.
+
+```{r one hot encoding}
+library(vtreat)
+tz <- vtreat::designTreatmentsZ(titanic, c('gender','embarked','country'))
+new_df <- vtreat::prepare(tz, titanic)
+View(new_df)
+```
+
+# AutoML solution - forester
+
+The forester is an AutoML tool for automated training of tree-based models. This package not only trains and tunes the model for us but also prepares the dataset for the training process. The most important things from our perspective are the check_data`()` function, which provides information about possible issues in our dataset, and possibly a preprocessing function which manages the most important issues.
+
+```{r forester lisbon}
+str <- check_data(lisbon, 'Price')
+```
+
+```{r}
+str <- check_data(titanic, 'survived')
+```
+
+For more information about the forester visit the repository or a series of blogs:
+
+-   Repo: <https://github.com/ModelOriented/forester>,
+
+-   forester introduction: <https://medium.com/responsibleml/forester-an-r-package-for-automated-building-of-tree-based-models-5e683c7489c>
+
+-   forester in detail: <https://medium.com/responsibleml/forester-what-makes-the-package-special-9ece9b8a64d>
+
+-   Use case scenario: <https://medium.com/responsibleml/forester-predicting-house-prices-use-case-b537253b6142>
+
+-   AutoML pipeline: <https://medium.com/responsibleml/forester-the-simplicity-of-automl-98d9272f3ea>
